@@ -1188,6 +1188,10 @@
     </div>
 
     <script>
+        // NOTE: Errors like "Cannot find menu item with id translate-page" are often caused by
+        // browser extensions (e.g., Google Translate) and not by the application code itself.
+        // If you see such errors, try disabling browser extensions.
+
         // --- Authentication & UI Display Logic ---
         const loginSection = document.getElementById('login-section');
         const mainAppSection = document.getElementById('main-app-section');
@@ -1591,8 +1595,7 @@
             cachedData: [],
             lastResults: { bigsmall: [] },
             currentPrediction: null,
-            currentPeriod: null,
-            lastTimerUpdate: 0
+            currentPeriod: null
         };
 
         function updateLanguage() {
@@ -1963,45 +1966,47 @@
             });
         });
 
-        let timerRAF;
-        // --- UPDATED: Period Timer with IST Calculation ---
-        function updatePeriodAndTimer() {
-            const now = new Date();
-            const currentTime = now.getTime();
-            if (currentTime - state.lastTimerUpdate < 1000) {
-                timerRAF = requestAnimationFrame(updatePeriodAndTimer);
-                return;
+        // --- UPDATED: Period Timer with API-based Syncing ---
+        let isFetchingPeriod = false;
+        const PERIOD_FETCH_INTERVAL = 3000; // Fetch every 3 seconds
+        let lastPeriodFetchTime = 0;
+
+        async function updatePeriodAndTimer() {
+            const now = Date.now();
+            // Throttle the API call to avoid excessive requests
+            if (now - lastPeriodFetchTime > PERIOD_FETCH_INTERVAL && !isFetchingPeriod) {
+                isFetchingPeriod = true;
+                lastPeriodFetchTime = now;
+                try {
+                    // Fetch only the most recent results to find the last period
+                    const data = await fetchOptimizedPage(1); 
+                    if (data && data.length > 0) {
+                        // The first item is the most recent completed period
+                        const lastCompletedPeriod = data[0].issue;
+                        
+                        // Safely increment the period number using BigInt for large numbers
+                        const lastPeriodNum = BigInt(lastCompletedPeriod);
+                        const currentPeriod = (lastPeriodNum + 1n).toString();
+
+                        // If the period has changed, generate a new prediction
+                        if (state.lastPeriodNumber !== currentPeriod) {
+                            console.log(`New period detected. Old: ${state.lastPeriodNumber}, New: ${currentPeriod}`);
+                            state.lastPeriodNumber = currentPeriod;
+                            state.currentPrediction = null; // Reset prediction for the new period
+                            state.currentPeriod = currentPeriod;
+                            await generateResult(currentPeriod);
+                        }
+                    }
+                } catch (error) {
+                    console.error("Error fetching latest period:", error);
+                    updateServerStatus(false);
+                } finally {
+                    isFetchingPeriod = false;
+                }
             }
-            state.lastTimerUpdate = currentTime;
-
-            // Convert current time to Indian Standard Time (UTC+5:30)
-            const istOffset = 330 * 60000; // 5.5 hours in milliseconds
-            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-            const istTime = new Date(utc + istOffset);
-
-            const year = istTime.getFullYear();
-            const month = String(istTime.getMonth() + 1).padStart(2, '0');
-            const day = String(istTime.getDate()).padStart(2, '0');
             
-            // The game seems to have 1440 periods per day (one per minute)
-            const totalMinutesToday = istTime.getHours() * 60 + istTime.getMinutes();
-            const periodIndex = totalMinutesToday + 1; // 1-based index for the day
-            
-            // Construct the period number string
-            const periodNumber = `${year}${month}${day}${String(periodIndex).padStart(4, '0')}`;
-
-            if (state.lastPeriodNumber !== periodNumber) {
-                state.lastPeriodNumber = periodNumber;
-                state.currentPrediction = null;
-                state.currentPeriod = periodNumber;
-                generateResult(periodNumber); 
-            }
-
-            if (document.getElementById('currentPeriod')) {
-                document.getElementById('currentPeriod').textContent = periodNumber.slice(-5);
-            }
-
-            timerRAF = requestAnimationFrame(updatePeriodAndTimer);
+            // Keep the loop running
+            requestAnimationFrame(updatePeriodAndTimer);
         }
 
         if (isNotificationsEnabled && Notification.permission === 'default') {
@@ -2017,7 +2022,7 @@
         }
 
         window.addEventListener('beforeunload', () => {
-            if (timerRAF) cancelAnimationFrame(timerRAF);
+            // Clean up to prevent memory leaks, although requestAnimationFrame usually stops on page unload.
         });
     </script>
 </body>
